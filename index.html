@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AgRadar · Inteligencia de mercados para el agro</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&family=DM+Mono:wght@400;500&display=swap" />
+<style>html,body{margin:0;background:#07090B}#root{min-height:100vh}</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useMemo, useRef } = React;
+
+// ============================================================
+// AgRadar · app unificada (un solo archivo)
+// Todo se deriva de FEED. En producción un backend semanal
+// reescribe FEED (o un data.json). Hoy: datos REALES sem #26.
+// Termómetro = matemática real. Matriz = real (urea/MAP) +
+// muestra (glifosato/gasoil/soja), marcado.
+// ============================================================
+const FEED = {
+  semana: "#26", periodo: "22–26 jun 2026", actualizado: "26 jun 2026",
+  fuente: "Reporte IF (Ing. en Fertilizantes)",
+  granos: {
+    maiz:  { label: "Maíz",  fas: 180, varSem: 0.00,  varIa: -0.33 },
+    soja:  { label: "Soja",  fas: 310, varSem: 0.00,  varIa: 0.00, muestra: true },
+    trigo: { label: "Trigo", fas: 200, varSem: -0.05, varIa: 0.01 },
+  },
+  reco: [
+    { id: "map", nombre: "MAP", tipo: "Fosfatado", cfr: 905, fca: 1010, varSem: 0.03, varIa: 0.15,
+      stack: { port: 30, derechos: 0.00, tasa: 0.03, log: 20, margen: 0.12 },
+      relacionEstado: "máximo", tendenciaIntl: "estable", supply: "sobreoferta", demand: "débil",
+      cuali: [
+        "Relación con el grano en máximos históricos: muy caro medido en grano.",
+        "Importaciones de fosfatados +22% sobre el promedio → mercado sobre-abastecido.",
+        "Recorte generalizado de dosis de fósforo y caída del consumo local.",
+        "China mantiene cerradas sus exportaciones de MAP/DAP; crisis del azufre sostiene el internacional.",
+      ] },
+    { id: "urea", nombre: "UREA", tipo: "Nitrogenado", cfr: 435, fca: 580, varSem: 0.00, varIa: 0.00,
+      stack: { port: 30, derechos: 0.00, tasa: 0.03, log: 20, margen: 0.12 },
+      relacionEstado: "neutro", tendenciaIntl: "baja", supply: "abundante", demand: "débil",
+      cuali: [
+        "Internacional en fuerte derrumbe (paz EE.UU.–Irán, reapertura de Ormuz); el local no lo refleja del todo.",
+        "Relación con el grano en torno al promedio de 5 años: incentivo de precio neutro.",
+        "Mercado local bien abastecido (importaciones nitrogenadas +20%).",
+        "El productor espera una baja adicional; actividad comercial casi nula.",
+      ] },
+  ],
+  matriz: [
+    { id: "glifosato", nombre: "Glifosato", unidad: "vs década", muestra: true, g: { maiz: -22, soja: -18, trigo: -20 } },
+    { id: "urea",      nombre: "Urea",      unidad: "relación neutra", muestra: false, g: { maiz: 2, soja: 1, trigo: 0 } },
+    { id: "map",       nombre: "MAP",       unidad: "máximos hist.",   muestra: false, g: { maiz: 35, soja: 25, trigo: 14 } },
+    { id: "gasoil",    nombre: "Gasoil",    unidad: "vs década",       muestra: true, g: { maiz: 9, soja: 3, trigo: 7 } },
+  ],
+};
+
+const T = { bg:"#07090B", txt:"#F2F5F3", mute:"#8A949C", dim:"#5A646C", line:"rgba(255,255,255,0.09)", glass:"rgba(255,255,255,0.04)", mint:"#4FE0A8", red:"#FF6B6B", amber:"#F4C150" };
+const DISP="'Space Grotesk',system-ui,sans-serif", BODY="'Inter',system-ui,sans-serif", MONO="'DM Mono',ui-monospace,monospace";
+const pct=(x)=>`${x>=0?"+":""}${(x*100).toFixed(1)}%`;
+const pct0=(x)=>`${x>=0?"+":""}${Math.round(x*100)}%`;
+
+function paridad(ins){ const s=ins.stack; const der=ins.cfr*s.derechos, tasa=ins.cfr*s.tasa;
+  const sub=ins.cfr+s.port+der+tasa+s.log; const par=sub*(1+s.margen); const brecha=ins.fca-par;
+  return { par:Math.round(par), brecha:Math.round(brecha), brechaPct:brecha/par }; }
+function relGranos(ins,granos){ return Object.keys(granos).map(k=>({grano:granos[k].label, val:ins.fca/granos[k].fas, muestra:granos[k].muestra})); }
+function recomendar(ins,granos){ const p=paridad(ins); let score=0; const f=[];
+  if(p.brechaPct<=-0.05){score+=1;f.push(["+",`Barato vs paridad de importación (${pct(p.brechaPct)})`]);}
+  else if(p.brechaPct>=0.05){score-=1;f.push(["−",`Caro vs paridad de importación (${pct(p.brechaPct)})`]);}
+  else f.push(["=",`En línea con su paridad de importación (${pct(p.brechaPct)})`]);
+  if(ins.relacionEstado==="máximo"){score-=1;f.push(["−","Relación insumo-grano en máximos históricos: caro medido en grano"]);}
+  else if(ins.relacionEstado==="mínimo"){score+=1;f.push(["+","Relación insumo-grano en mínimos: barato medido en grano"]);}
+  else f.push(["=","Relación insumo-grano neutra vs su historia"]);
+  if(ins.tendenciaIntl==="baja"){score-=1;f.push(["−","Internacional en baja: probable que el local ceda más → esperar"]);}
+  else if(ins.tendenciaIntl==="alza"){score+=1;f.push(["+","Internacional en alza: la ventana podría cerrarse"]);}
+  if((ins.supply==="sobreoferta"||ins.supply==="abundante")&&ins.demand==="débil"){score-=1;f.push(["−","Mercado sobre-abastecido y demanda débil: sin urgencia"]);}
+  let veredicto,color;
+  if(score>=2){veredicto="ABASTECERSE";color=T.mint;}
+  else if(score===1){veredicto="COMPRA SELECTIVA";color=T.mint;}
+  else if(score===0){veredicto="NEUTRAL";color=T.amber;}
+  else if(score===-1){veredicto="SOLO LO INDISPENSABLE";color=T.amber;}
+  else {veredicto="ESPERAR";color=T.red;}
+  const pos=f.filter(x=>x[0]==="+").map(x=>x[1].toLowerCase());
+  const neg=f.filter(x=>x[0]==="−").map(x=>x[1].toLowerCase());
+  let sintesis;
+  if(pos.length&&neg.length) sintesis=`Está ${pos[0]}, pero ${neg.join("; y ")}. La señal de precio no alcanza para adelantar compra.`;
+  else if(neg.length) sintesis=`${neg.join("; ")}. No hay incentivo para comprar hoy.`;
+  else if(pos.length) sintesis=`${pos.join("; ")}. El cuadro favorece abastecerse.`;
+  else sintesis="Cuadro neutro: sin señal fuerte.";
+  return {...p,score,factores:f,veredicto,color,sintesis,rel:relGranos(ins,granos)}; }
+function heat(dev){ const s=Math.max(-25,Math.min(25,-dev)); const t=(s+25)/50; const h=4+t*(150-4);
+  return { fill:`hsla(${h},64%,46%,0.16)`, line:`hsl(${h},70%,55%)`, text:`hsl(${h},80%,72%)` }; }
+const sigWord=(d)=>d<=-8?"BARATO":d>=8?"CARO":"EN LÍNEA";
+
+function Glass({children,style,glow}){ return <div style={{background:T.glass,border:`1px solid ${T.line}`,borderRadius:16,backdropFilter:"blur(14px)",boxShadow:glow?`0 0 0 1px ${glow}1f,0 22px 60px -32px ${glow}40`:"0 22px 50px -32px rgba(0,0,0,.8)",...style}}>{children}</div>; }
+function Q({label,value,sub,color}){ return <div style={{border:`1px solid ${T.line}`,borderRadius:11,padding:"10px 12px",background:"rgba(0,0,0,.22)"}}><div style={{fontFamily:MONO,fontSize:8.5,color:T.mute,letterSpacing:.4}}>{label}</div><div style={{fontFamily:DISP,fontWeight:700,fontSize:18,marginTop:4,color:color||T.txt}}>{value}</div>{sub&&<div style={{fontFamily:MONO,fontSize:9,color:T.dim,marginTop:1}}>{sub}</div>}</div>; }
+function Title({n,t,sub}){ return <div style={{display:"flex",alignItems:"baseline",gap:12,marginBottom:18,flexWrap:"wrap"}}><span style={{fontFamily:MONO,fontSize:12,color:T.mint}}>{n}</span><span style={{fontFamily:DISP,fontSize:24,fontWeight:700}}>{t}</span><span style={{fontFamily:MONO,fontSize:10,color:T.mute,marginLeft:"auto"}}>{sub}</span></div>; }
+
+function RecoCard({ins,granos}){ const r=useMemo(()=>recomendar(ins,granos),[ins]);
+  return <Glass glow={r.color} style={{padding:20,marginBottom:16}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14}}>
+      <div><div style={{fontFamily:DISP,fontWeight:700,fontSize:22}}>{ins.nombre}</div><div style={{fontFamily:MONO,fontSize:9,color:T.dim,marginTop:2,letterSpacing:.4}}>{ins.tipo.toUpperCase()} · U$S/t</div></div>
+      <span style={{fontFamily:MONO,fontSize:11,color:r.color,border:`1px solid ${r.color}`,background:`${r.color}1c`,padding:"6px 13px",borderRadius:22}}>{r.veredicto}</span>
+    </div>
+    <div style={{fontFamily:DISP,fontSize:14,lineHeight:1.5,color:T.txt,borderLeft:`3px solid ${r.color}`,paddingLeft:12,marginBottom:16}}>{r.sintesis}</div>
+    <div style={{fontFamily:MONO,fontSize:9,color:T.mute,letterSpacing:1,marginBottom:8}}>CONTEXTO CUANTITATIVO</div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
+      <Q label="PRECIO REAL FCA" value={`$${ins.fca.toLocaleString("es-AR")}`} sub={`sem ${pct0(ins.varSem)} · ia ${pct0(ins.varIa)}`}/>
+      <Q label="PARIDAD IMPORT." value={`$${r.par.toLocaleString("es-AR")}`} sub={`CFR ${ins.cfr}+stack`}/>
+      <Q label="BRECHA PARIDAD" value={pct(r.brechaPct)} sub={`${r.brecha} U$S/t`} color={r.brechaPct<=-0.05?T.mint:r.brechaPct>=0.05?T.red:T.amber}/>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:16}}>
+      {r.rel.map(x=><Q key={x.grano} label={`/ ${x.grano.toUpperCase()}`} value={x.val.toFixed(1)} sub={x.muestra?"qq · muestra":"qq por t"} color={ins.relacionEstado==="máximo"?T.red:ins.relacionEstado==="mínimo"?T.mint:T.amber}/>)}
+    </div>
+    <div style={{fontFamily:MONO,fontSize:9,color:T.mute,letterSpacing:1,marginBottom:8}}>POR QUÉ — factores que pesaron</div>
+    <div style={{marginBottom:16}}>{r.factores.map((f,i)=>{const c=f[0]==="+"?T.mint:f[0]==="−"?T.red:T.amber;return <div key={i} style={{display:"flex",gap:9,alignItems:"flex-start",marginBottom:6}}><span style={{fontFamily:MONO,fontSize:13,color:c,width:12,textAlign:"center"}}>{f[0]}</span><span style={{fontFamily:MONO,fontSize:11.5,color:T.txt,lineHeight:1.4}}>{f[1]}</span></div>;})}</div>
+    <div style={{fontFamily:MONO,fontSize:9,color:T.mute,letterSpacing:1,marginBottom:8}}>CONTEXTO CUALITATIVO</div>
+    <div>{ins.cuali.map((c,i)=><div key={i} style={{display:"flex",gap:9,marginBottom:6}}><span style={{color:T.dim,fontFamily:MONO,fontSize:11}}>—</span><span style={{fontFamily:MONO,fontSize:11,color:T.mute,lineHeight:1.45}}>{c}</span></div>)}</div>
+  </Glass>; }
+
+function Matriz({sel,setSel}){ const G=Object.keys(FEED.granos);
+  return <div style={{overflowX:"auto"}}><Glass style={{overflow:"hidden",minWidth:560}}>
+    <div style={{display:"grid",gridTemplateColumns:"118px 1fr 1fr 1fr",borderBottom:`1px solid ${T.line}`}}>
+      <div style={{padding:"13px 14px",fontFamily:MONO,fontSize:9,color:T.mute,letterSpacing:.6}}>INSUMO / GRANO</div>
+      {G.map(g=><div key={g} style={{padding:"13px",fontFamily:DISP,fontSize:14,fontWeight:600,textAlign:"center",borderLeft:`1px solid ${T.line}`}}>{FEED.granos[g].label}</div>)}
+    </div>
+    {FEED.matriz.map((ins,ri)=><div key={ins.id} style={{display:"grid",gridTemplateColumns:"118px 1fr 1fr 1fr",borderBottom:ri<FEED.matriz.length-1?`1px solid ${T.line}`:"none"}}>
+      <div style={{padding:14,borderRight:`1px solid ${T.line}`,display:"flex",flexDirection:"column",justifyContent:"center"}}>
+        <div style={{fontFamily:DISP,fontSize:15,fontWeight:600}}>{ins.nombre}{ins.muestra&&<span style={{fontFamily:MONO,fontSize:7.5,color:T.dim}}> ·m</span>}</div>
+        <div style={{fontFamily:MONO,fontSize:8.5,color:T.dim,marginTop:3}}>{ins.unidad}</div>
+      </div>
+      {G.map(g=>{const dev=ins.g[g];const c=heat(dev);const isSel=sel&&sel.i===ins.id&&sel.g===g;
+        return <button key={g} onClick={()=>setSel({i:ins.id,g})} style={{textAlign:"left",cursor:"pointer",border:"none",borderLeft:`1px solid ${T.line}`,background:isSel?c.fill.replace("0.16","0.30"):c.fill,padding:"13px 13px 15px",outline:isSel?`1.5px solid ${c.line}`:"none",outlineOffset:-1.5}}>
+          <span style={{fontFamily:DISP,fontSize:20,fontWeight:700}}>{dev>=0?"+":""}{dev}%</span>
+          <div style={{fontFamily:MONO,fontSize:8,color:c.text,letterSpacing:.5,marginTop:3}}>{sigWord(dev)} · vs hist.</div>
+        </button>;})}
+    </div>)}
+  </Glass></div>; }
+
+function MatrizDetalle({sel}){
+  if(!sel) return <div style={{border:`1px dashed ${T.line}`,borderRadius:12,padding:"14px 16px",marginTop:12,fontFamily:MONO,fontSize:11.5,color:T.mute}}>Tocá una celda para ver la lectura →</div>;
+  const ins=FEED.matriz.find(x=>x.id===sel.i); const dev=ins.g[sel.g]; const gl=FEED.granos[sel.g].label; const c=heat(dev);
+  const txt=dev<=-8?`${ins.nombre} está barato medido en ${gl.toLowerCase()}: ${Math.abs(dev)}% por debajo de su historia. Relación favorable para abastecerse.`:dev>=8?`${ins.nombre} está caro medido en ${gl.toLowerCase()}: ${dev}% por encima de su historia. Desincentiva la compra; conviene esperar o cubrir el grano.`:`${ins.nombre} en línea con su historia frente al ${gl.toLowerCase()}. Sin señal fuerte.`;
+  return <div style={{border:`1px solid ${c.line}`,borderRadius:14,padding:"16px 18px",marginTop:12,background:c.fill}}>
+    <div style={{fontFamily:DISP,fontSize:16,fontWeight:600,marginBottom:6}}>{ins.nombre} / {gl} <span style={{fontFamily:MONO,fontSize:10,color:c.text}}>· {sigWord(dev)}</span></div>
+    <div style={{fontFamily:BODY,fontSize:13.5,lineHeight:1.55,color:T.txt}}>{txt}{ins.muestra&&<span style={{color:T.dim}}> (dato de muestra — a cablear)</span>}</div>
+  </div>; }
+
+function Termometro(){ const [v,setV]=useState({rinde:90,precio:180,semilla:180,ferti:320,proteccion:110,labores:130,cosecha:90,arrendamiento:14,retenciones:12,comercial:8,superficie:200});
+  const set=(k)=>(e)=>{const val=e.target.value;setV(p=>({...p,[k]:val===""?"":Number(val)}));}; const n=(x)=>x===""||isNaN(x)?0:Number(x);
+  const c=useMemo(()=>{const tnHa=n(v.rinde)/10;const ib=tnHa*n(v.precio);const desc=ib*(n(v.retenciones)+n(v.comercial))/100;const arr=(n(v.arrendamiento)/10)*n(v.precio);const cost=n(v.semilla)+n(v.ferti)+n(v.proteccion)+n(v.labores)+n(v.cosecha)+arr;const m=ib-desc-cost;const mp=ib>0?m/ib*100:0;const mt=m*n(v.superficie);const fn=1-(n(v.retenciones)+n(v.comercial))/100;const rbe=n(v.precio)>0&&fn>0?(cost/(n(v.precio)*fn))*10:0;const pbe=tnHa>0&&fn>0?cost/(tnHa*fn):0;return{ib,cost,m,mp,mt,rbe,pbe};},[v]);
+  const gp=Math.max(0,Math.min(100,((c.mp+20)/60)*100)); let z,zc; if(c.mp<0){z="PÉRDIDA";zc=T.red;}else if(c.mp<10){z="AJUSTADO";zc=T.amber;}else if(c.mp<25){z="SANO";zc=T.mint;}else{z="HOLGADO";zc=T.mint;}
+  const frase={PÉRDIDA:"No cubre costos a estos números. Cada hectárea resta.",AJUSTADO:"Margen fino. Una baja de precio o rinde te deja al límite.",SANO:"Margen sólido. Hay colchón ante una caída moderada.",HOLGADO:"Margen amplio. Resiste shocks de precio o rinde."}[z];
+  const usd=(x)=>`US$ ${Math.round(x).toLocaleString("es-AR")}`;
+  const groups=[["Producción",[["rinde","Rinde","qq/ha"],["superficie","Superficie","ha"]]],["Precio",[["precio","Precio grano","US$/tn"]]],["Costos",[["semilla","Semilla","US$/ha"],["ferti","Fertiliz.","US$/ha"],["proteccion","Protección","US$/ha"],["labores","Labores","US$/ha"],["cosecha","Cosecha","US$/ha"],["arrendamiento","Arrend.","qq/ha"]]],["Comercialización",[["retenciones","Retenc.","%"],["comercial","Comerc.","%"]]]];
+  const copy=()=>{const t=`Margen (US$/ha): ${Math.round(c.m)} — ${z}\nMargen %: ${c.mp.toFixed(1)}%\nRinde indif.: ${c.rbe.toFixed(0)} qq/ha\nPrecio indif.: US$ ${c.pbe.toFixed(0)}/tn\n→ Calculá el tuyo · AgRadar`;if(navigator.clipboard)navigator.clipboard.writeText(t);};
+  return <div className="tg" style={{display:"grid",gridTemplateColumns:"1fr",gap:16}}>
+    <Glass style={{padding:18}}>{groups.map(([t,fs])=><div key={t} style={{marginBottom:14}}><div style={{fontFamily:MONO,fontSize:9.5,letterSpacing:1,color:T.mint,marginBottom:8}}>{t.toUpperCase()}</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9}}>{fs.map(([k,l,u])=><label key={k} style={{display:"flex",flexDirection:"column",gap:4}}><span style={{fontFamily:MONO,fontSize:9.5,color:T.mute}}>{l} ({u})</span><input type="number" value={v[k]} onChange={set(k)} style={{fontFamily:MONO,fontSize:15,padding:"9px 11px",border:`1px solid ${T.line}`,background:"rgba(0,0,0,.3)",color:T.txt,borderRadius:8,width:"100%",boxSizing:"border-box"}}/></label>)}</div></div>)}</Glass>
+    <Glass glow={T.mint} style={{padding:22,display:"flex",flexDirection:"column",gap:16}}>
+      <div><div style={{fontFamily:MONO,fontSize:10,letterSpacing:1,color:T.mute}}>MARGEN BRUTO</div><div style={{display:"flex",alignItems:"baseline",gap:12,marginTop:4}}><span style={{fontFamily:DISP,fontSize:54,fontWeight:700,lineHeight:1,color:zc}}>{Math.round(c.m)}</span><span style={{fontFamily:MONO,fontSize:13,color:T.mute}}>US$/ha</span></div></div>
+      <div><div style={{position:"relative",height:14,borderRadius:8,overflow:"hidden",background:"rgba(0,0,0,.4)"}}><div style={{position:"absolute",inset:0,display:"flex",opacity:.85}}><div style={{flex:20,background:T.red}}/><div style={{flex:10,background:T.amber}}/><div style={{flex:15,background:"#2E9E72"}}/><div style={{flex:15,background:T.mint}}/></div><div style={{position:"absolute",top:-4,left:`calc(${gp}% - 2px)`,width:4,height:22,background:"#fff",borderRadius:3,transition:"left .5s"}}/></div>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:8}}><span style={{fontFamily:MONO,fontSize:11,color:T.mute}}>{c.mp.toFixed(1)}% del ingreso</span><span style={{fontFamily:MONO,fontSize:12,color:zc,letterSpacing:1}}>{z}</span></div>
+        <p style={{fontFamily:BODY,fontSize:12.5,color:T.mute,lineHeight:1.5,margin:"10px 0 0"}}>{frase}</p></div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,borderTop:`1px solid ${T.line}`,paddingTop:14}}>
+        {[["Rinde de indiferencia",`${c.rbe.toFixed(0)} qq/ha`],["Precio de indiferencia",`US$ ${c.pbe.toFixed(0)}`],["Costo total",`${usd(c.cost)}/ha`],["Margen total",usd(c.mt)]].map(([l,val])=><div key={l}><div style={{fontFamily:MONO,fontSize:9,color:T.mute,letterSpacing:.4}}>{l.toUpperCase()}</div><div style={{fontFamily:DISP,fontSize:19,fontWeight:600,marginTop:3}}>{val}</div></div>)}
+      </div>
+      <button onClick={copy} style={{fontFamily:MONO,fontSize:12,letterSpacing:.4,background:T.mint,color:"#06251a",border:"none",padding:12,borderRadius:9,cursor:"pointer",fontWeight:500}}>COPIAR RESULTADO PARA COMPARTIR ↗</button>
+    </Glass>
+  </div>; }
+
+function Alertas(){ const [email,setEmail]=useState("");const [sent,setSent]=useState(false);
+  const sub=()=>{if(!email||!email.includes("@"))return;setSent(true);};
+  const trg=["Glifosato/Soja < percentil 10","Urea/Maíz −12% vs promedio","MAP/Soja +11% vs promedio"];
+  return <div className="eg" style={{display:"grid",gridTemplateColumns:"1fr",gap:16}}>
+    <Glass style={{overflow:"hidden"}}>
+      <div style={{background:"rgba(255,255,255,.05)",borderBottom:`1px solid ${T.line}`,padding:"12px 16px",fontFamily:MONO,fontSize:11,color:T.mute}}><div><span style={{color:T.dim}}>De:</span> AgRadar &lt;alertas@agradar.com.ar&gt;</div><div style={{marginTop:3}}><span style={{color:T.dim}}>Asunto:</span> <span style={{color:T.txt}}>⚠️ Glifosato/Soja en mínimo de la década</span></div></div>
+      <div style={{padding:18}}><div style={{fontFamily:DISP,fontSize:18,fontWeight:700}}>Glifosato barato en términos de soja</div><p style={{fontFamily:BODY,fontSize:13,lineHeight:1.6,color:T.mute,marginTop:8}}>La relación está hoy <b style={{color:T.txt}}>18% por debajo</b> del promedio de 10 años.</p><div style={{fontFamily:BODY,fontSize:12.5,color:T.txt,borderLeft:`3px solid ${T.mint}`,paddingLeft:12,margin:"12px 0"}}>Ventana de compra de herbicida. El que se abastece lo paga barato medido en grano.</div><div style={{fontFamily:MONO,fontSize:9.5,color:T.dim}}>No es recomendación · AgRadar</div></div>
+    </Glass>
+    <Glass glow={T.mint} style={{padding:"26px 22px",display:"flex",flexDirection:"column",justifyContent:"center"}}>
+      <div style={{fontFamily:MONO,fontSize:10,letterSpacing:1.5,color:T.mint}}>ALERTAS · MAIL + WHATSAPP · GRATIS</div>
+      <div style={{fontFamily:DISP,fontSize:26,fontWeight:700,lineHeight:1.15,margin:"10px 0 8px"}}>Te avisamos solo cuando una relación toca un extremo.</div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:6,margin:"6px 0 16px"}}>{trg.map(t=><span key={t} style={{fontFamily:MONO,fontSize:10,color:T.mute,border:`1px solid ${T.line}`,borderRadius:20,padding:"5px 10px",background:"rgba(0,0,0,.25)"}}>{t}</span>)}</div>
+      {sent?<div style={{fontFamily:MONO,fontSize:13.5,color:T.mint,border:`1px solid ${T.mint}`,padding:14,borderRadius:10,background:`${T.mint}14`}}>✓ Listo. Te llega la próxima alerta apenas se gatille.</div>
+      :<div style={{display:"flex",gap:8,flexWrap:"wrap"}}><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="tu@mail.com" style={{fontFamily:MONO,fontSize:15,padding:"13px 14px",border:`1px solid ${T.line}`,background:"rgba(0,0,0,.3)",color:T.txt,borderRadius:10,flex:"1 1 200px",minWidth:0}}/><button onClick={sub} style={{fontFamily:MONO,fontSize:13,background:T.mint,color:"#06251a",border:"none",padding:"13px 20px",borderRadius:10,cursor:"pointer",fontWeight:500,whiteSpace:"nowrap"}}>QUIERO LAS ALERTAS</button></div>}
+    </Glass>
+  </div>; }
+
+function App(){
+  const [sel,setSel]=useState({i:"map",g:"maiz"});
+  const recoRef=useRef(null), termRef=useRef(null);
+  const go=(r)=>r.current&&r.current.scrollIntoView({behavior:"smooth",block:"start"});
+  const tick=["MAP −8% vs paridad","UREA esperar · internacional en baja","GLIFOSATO/SOJA −18% vs 10a","MAP/MAÍZ máximos hist.","SOJA/MAÍZ 2.46 ▲"];
+  return <div style={{background:T.bg,minHeight:"100vh",color:T.txt,fontFamily:BODY,backgroundImage:"radial-gradient(800px 460px at 82% -6%,rgba(79,224,168,0.10),transparent 60%),radial-gradient(640px 500px at 0% 5%,rgba(80,120,255,0.06),transparent 55%)"}}>
+    <style>{`@keyframes mq{from{transform:translateX(0)}to{transform:translateX(-50%)}}.tk{animation:mq 26s linear infinite}*{-webkit-font-smoothing:antialiased}input:focus{outline:2px solid ${T.mint};outline-offset:1px}@media(min-width:860px){.tg{grid-template-columns:1fr 1fr!important}.eg{grid-template-columns:1fr 1fr!important}}@media(prefers-reduced-motion:reduce){.tk{animation:none!important}*{transition:none!important}}`}</style>
+    <div style={{position:"sticky",top:0,zIndex:20,backdropFilter:"blur(12px)",background:"rgba(7,9,11,.72)",borderBottom:`1px solid ${T.line}`}}>
+      <div style={{maxWidth:1060,margin:"0 auto",padding:"13px 20px",display:"flex",alignItems:"center",gap:11}}>
+        <div style={{width:27,height:27,borderRadius:7,background:T.mint,display:"flex",alignItems:"center",justifyContent:"center",color:"#06251a",fontFamily:DISP,fontWeight:700,fontSize:16}}>A</div>
+        <div style={{fontFamily:DISP,fontSize:18,fontWeight:700,letterSpacing:.5}}><span style={{color:T.mint}}>Ag</span>Radar</div>
+        <span style={{fontFamily:MONO,fontSize:9.5,color:T.dim}}>mercados agro</span>
+        <span style={{marginLeft:"auto",fontFamily:MONO,fontSize:9,color:T.dim,textAlign:"right"}}>SEM {FEED.semana}<br/>{FEED.actualizado}</span>
+      </div>
+    </div>
+    <div style={{borderBottom:`1px solid ${T.line}`,overflow:"hidden",background:"rgba(0,0,0,.35)"}}><div className="tk" style={{display:"flex",gap:34,whiteSpace:"nowrap",padding:"8px 0"}}>{[...tick,...tick].map((t,i)=><span key={i} style={{fontFamily:MONO,fontSize:11,color:T.mute}}><span style={{color:T.mint,marginRight:7}}>●</span>{t}</span>)}</div></div>
+
+    <div style={{maxWidth:1060,margin:"0 auto",padding:"0 20px 70px"}}>
+      <section style={{padding:"48px 0 36px",maxWidth:720}}>
+        <div style={{fontFamily:MONO,fontSize:11,letterSpacing:2,color:T.mint,marginBottom:16}}>INTELIGENCIA DE MERCADOS PARA EL AGRO</div>
+        <h1 style={{fontFamily:DISP,fontSize:"clamp(32px,5.4vw,54px)",fontWeight:700,lineHeight:1.05,letterSpacing:-.8,margin:0}}>El precio solo no alcanza.<br/><span style={{color:T.mint}}>La decisión está en la relación.</span></h1>
+        <p style={{fontFamily:BODY,fontSize:16,lineHeight:1.6,color:T.mute,maxWidth:520,margin:"20px 0 26px"}}>AgRadar mide cada insumo contra su paridad de importación y su historia, y te dice cuándo comprar, esperar o cubrir. Sin humo: te muestra por qué.</p>
+        <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+          <button onClick={()=>go(recoRef)} style={{fontFamily:MONO,fontSize:12,background:T.mint,color:"#06251a",border:"none",padding:"13px 22px",borderRadius:10,cursor:"pointer",fontWeight:500}}>Ver recomendación</button>
+          <button onClick={()=>go(termRef)} style={{fontFamily:MONO,fontSize:12,background:"transparent",color:T.txt,border:`1px solid ${T.line}`,padding:"13px 20px",borderRadius:10,cursor:"pointer"}}>Termómetro de margen</button>
+        </div>
+      </section>
+
+      <section ref={recoRef} style={{paddingTop:30,scrollMarginTop:70}}>
+        <Title n="01" t="Recomendación de la semana" sub="datos reales · ref. IF"/>
+        <Glass style={{padding:16,marginBottom:18}}>
+          <div style={{fontFamily:DISP,fontSize:15,lineHeight:1.45}}>Ni la urea ni el MAP gatillan compra esta semana. El que puede esperar, espera.</div>
+          <div style={{fontFamily:MONO,fontSize:10.5,color:T.mute,marginTop:8,lineHeight:1.5}}>La urea sigue cayendo afuera y todavía no terminó de bajar acá. El MAP está barato vs importarlo, pero carísimo medido en grano y con el mercado sobrado de producto.</div>
+        </Glass>
+        {FEED.reco.map(ins=><RecoCard key={ins.id} ins={ins} granos={FEED.granos}/>)}
+      </section>
+
+      <section style={{paddingTop:40}}>
+        <Title n="02" t="Matriz insumo / grano" sub="color = posición vs su historia · tocá una celda"/>
+        <Matriz sel={sel} setSel={setSel}/>
+        <MatrizDetalle sel={sel}/>
+        <div style={{fontFamily:MONO,fontSize:9.5,color:T.dim,marginTop:12}}>·m = dato de muestra (glifosato, gasoil, soja) a cablear. Urea y MAP con dato real.</div>
+      </section>
+
+      <section ref={termRef} style={{paddingTop:44,scrollMarginTop:70}}>
+        <Title n="03" t="Termómetro de margen" sub="cargá tu campaña — matemática real"/>
+        <Termometro/>
+      </section>
+
+      <section style={{paddingTop:44}}>
+        <Title n="04" t="Alertas" sub="te avisamos cuando algo toca un extremo"/>
+        <Alertas/>
+      </section>
+
+      <div style={{border:`1px dashed ${T.line}`,borderRadius:12,padding:"14px 16px",marginTop:34}}>
+        <div style={{fontFamily:MONO,fontSize:9.5,color:T.mint,letterSpacing:1,marginBottom:6}}>CÓMO SE ACTUALIZA</div>
+        <div style={{fontFamily:MONO,fontSize:10.5,color:T.mute,lineHeight:1.55}}>Toda la pantalla se genera sola desde un único bloque de datos. La recomendación, la brecha y el contexto se recalculan al cambiarlo. En producción, un proceso semanal lee la fuente y lo reescribe — nada se edita a mano.</div>
+      </div>
+      <footer style={{borderTop:`1px solid ${T.line}`,marginTop:34,paddingTop:18,display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:8,fontFamily:MONO,fontSize:9.5,color:T.dim}}>
+        <span>AgRadar</span><span>No es recomendación de compra/venta. Fines informativos.</span>
+      </footer>
+    </div>
+  </div>; }
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
